@@ -4,19 +4,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="Seguimiento de reportes técnicos", page_icon="🚦", layout="wide", initial_sidebar_state="expanded")
-
+st.set_page_config(page_title="Seguimiento DAT v2.2", page_icon="📊", layout="wide")
 st.markdown("""<style>
-[data-testid="stAppViewContainer"]{background:#f4f7fb;color:#102448}
-[data-testid="stSidebar"]{background:linear-gradient(180deg,#13385f,#102d4c);}
-[data-testid="stSidebar"] *{color:white}
-.block-container{padding-top:1.2rem;max-width:1600px}
-.hero{font-size:2.2rem;font-weight:800;color:#0c2142;margin-bottom:0}
-.sub{color:#66758d;margin-top:-5px;margin-bottom:18px}
-.card{background:white;border:1px solid #dfe7f1;border-radius:12px;padding:18px 20px;box-shadow:0 2px 8px rgba(20,50,90,.05);height:100%}
-.klabel{color:#34445f;font-size:1rem}.kvalue{font-size:2.5rem;font-weight:800;line-height:1.05}.green{color:#219653}.amber{color:#f2a900}.red{color:#d9272e}.navtitle{font-size:1.15rem;font-weight:800;margin-bottom:12px}.rule{border-left:4px solid #2671c8;padding-left:14px;margin:12px 0}.note{background:#e8f2ff;border-radius:8px;padding:10px 14px;color:#29486c;margin:12px 0}
-div[data-testid="stDataFrame"]{background:white;border-radius:10px}
-.stButton>button,.stDownloadButton>button{border-radius:8px;font-weight:700}
+[data-testid="stAppViewContainer"]{background:#f4f7fb}[data-testid="stSidebar"]{background:#153b63}[data-testid="stSidebar"] *{color:white}
+.block-container{padding-top:1.2rem;max-width:1600px}.hero{font-size:2.1rem;font-weight:800;color:#102448}.sub{color:#66758d;margin-bottom:16px}
+.card{background:white;border:1px solid #dfe7f1;border-radius:12px;padding:17px 19px;box-shadow:0 2px 8px rgba(20,50,90,.05)}
+.k{font-size:2.25rem;font-weight:800}.muted{color:#65758b}.person{font-size:1.15rem;font-weight:750;color:#153b63}
 </style>""", unsafe_allow_html=True)
 
 def norm(x):
@@ -24,113 +17,81 @@ def norm(x):
     s=unicodedata.normalize("NFKD",str(x)).encode("ascii","ignore").decode().lower().strip()
     return re.sub(r"\s+"," ",s)
 
+def find_header(raw, required):
+    for i in range(min(20,len(raw))):
+        vals={norm(v) for v in raw.iloc[i].tolist()}
+        if set(required).issubset(vals): return i
+    raise ValueError(f"No se encontró encabezado: {required}")
+
 @st.cache_data(show_spinner=False)
 def load_book(data):
-    xls=pd.ExcelFile(io.BytesIO(data), engine="openpyxl")
-    raw=pd.read_excel(xls,"Report",header=None)
-    header=next(i for i in range(min(20,len(raw))) if {"id","dr status"}.issubset({norm(v) for v in raw.iloc[i]}))
-    d=pd.read_excel(xls,"Report",header=header)
-    z=pd.read_excel(xls,"Zonas")
-    d.columns=[str(c).strip() for c in d.columns]; z.columns=[str(c).strip() for c in z.columns]
-    d=d[d["ID"].notna()].copy()
-    d["Created date"]=pd.to_datetime(d["Created date"],errors="coerce",dayfirst=True)
-    z["_key"]=z["Sucursal"].map(norm)
-    z["Zona"]=z["Zona"].astype(str).str.replace("Zona ","",regex=False).str.strip().str.title()
+    xls=pd.ExcelFile(io.BytesIO(data),engine="openpyxl")
+    needed={"Report","Zonas","Responsables"}
+    if not needed.issubset(xls.sheet_names): raise ValueError("El Excel debe contener Report, Zonas y Responsables.")
+    rr=pd.read_excel(xls,"Report",header=None); rh=find_header(rr,{"id","dr status"})
+    zr=pd.read_excel(xls,"Zonas",header=None); zh=find_header(zr,{"sucursal","zona"})
+    pr=pd.read_excel(xls,"Responsables",header=None); ph=find_header(pr,{"zona","responsable"})
+    d=pd.read_excel(xls,"Report",header=rh); z=pd.read_excel(xls,"Zonas",header=zh); people=pd.read_excel(xls,"Responsables",header=ph)
+    d.columns=[str(c).strip() for c in d.columns]; z.columns=[str(c).strip() for c in z.columns]; people.columns=[str(c).strip() for c in people.columns]
+    d=d[d["ID"].notna()].copy(); d["Created date"]=pd.to_datetime(d["Created date"],errors="coerce",dayfirst=True)
+    z=z.dropna(subset=["Sucursal","Zona"]).copy(); z["_key"]=z["Sucursal"].map(norm); z["Zona"]=z["Zona"].astype(str).str.replace("Zona ","",regex=False).str.strip().str.title()
     z=z[z["Zona"].isin(["Norte","Centro","Sur"])]
-    zone_map=z.drop_duplicates("_key").set_index("_key")["Zona"].to_dict()
     aliases={"cws stracon copiapo":"copiapo","cws pozo almonte iquique":"iquique","cws atacama minerales copiapo":"copiapo"}
-    loc=d["Dealer_Location"].map(norm).replace(aliases)
+    loc=d["Dealer_Location"].map(norm).replace(aliases); zone_map=z.drop_duplicates("_key").set_index("_key")["Zona"].to_dict()
     d["Zona"]=loc.map(zone_map).fillna("Sin asignar")
+    people=people.dropna(subset=["Zona","Responsable"]).copy(); people["Zona"]=people["Zona"].astype(str).str.replace("Zona ","",regex=False).str.strip().str.title(); people["Responsable"]=people["Responsable"].astype(str).str.strip()
+    people=people[people["Zona"].isin(["Norte","Centro","Sur"])].drop_duplicates("Zona")
+    resp_map=people.set_index("Zona")["Responsable"].to_dict(); d["Responsable zona"]=d["Zona"].map(resp_map).fillna("Sin responsable de zona")
     assigned=d["Assigned to id"].notna() & d["Assigned to id"].astype(str).str.strip().ne("")
-    d["Asignado"]=assigned
     d["Días"]=((pd.Timestamp(date.today())-d["Created date"].dt.normalize()).dt.days).clip(lower=0)
-    d["Gestión pendiente"]="Fuera de semáforo"
-    workshop=d["DR Status"].isin(["New","Open"]) & ~assigned
-    d.loc[workshop,"Gestión pendiente"]="Asignar responsable"
-    waiting=d["DR Status"].eq("Waiting")
-    d.loc[waiting,"Gestión pendiente"]="Responder al concesionario"
-    d["Semáforo"]="No aplica"
-    d.loc[workshop & d["Días"].le(4),"Semáforo"]="🟢 En plazo"
-    d.loc[workshop & d["Días"].between(5,6),"Semáforo"]="🟡 Por vencer"
-    d.loc[workshop & d["Días"].ge(7),"Semáforo"]="🔴 Antiguo"
-    d.loc[waiting,"Semáforo"]="⚪ Pendiente validar"
-    return d
+    workshop=d["DR Status"].isin(["New","Open"]) & ~assigned; waiting=d["DR Status"].eq("Waiting")
+    d["Gestión pendiente"]="Fuera de semáforo"; d.loc[workshop,"Gestión pendiente"]="Asignar responsable"; d.loc[waiting,"Gestión pendiente"]="Responder al concesionario"
+    d["Semáforo"]="No aplica"; d.loc[workshop & d["Días"].le(4),"Semáforo"]="🟢 En plazo"; d.loc[workshop & d["Días"].between(5,6),"Semáforo"]="🟡 Por vencer"; d.loc[workshop & d["Días"].ge(7),"Semáforo"]="🔴 Antiguo"; d.loc[waiting,"Semáforo"]="⚪ Pendiente validar"
+    return d,people
 
-st.sidebar.markdown("<div class='navtitle'>📊 SEGUIMIENTO DAT</div>",unsafe_allow_html=True)
-page=st.sidebar.radio("Navegación",["Resumen","Casos","Zonas","Histórico semanal","Configuración"],label_visibility="collapsed")
-upload=st.sidebar.file_uploader("Cargar Excel semanal",type=["xlsx"])
-if upload: data=upload.getvalue(); source="Archivo cargado"
-else:
-    try: data=open("Base.xlsx","rb").read(); source="Base.xlsx incluido"
-    except FileNotFoundError: st.info("Cargue el Excel semanal para comenzar."); st.stop()
-try: df=load_book(data)
-except Exception as e: st.error(f"No se pudo leer el archivo: {e}"); st.stop()
-st.sidebar.caption(source)
-st.sidebar.markdown("---")
-st.sidebar.caption("Actualización semanal cada lunes")
+st.sidebar.markdown("### 📊 SEGUIMIENTO DAT v2.2")
+page=st.sidebar.radio("",["Resumen","Casos","Zonas","Responsables","Configuración"])
+u=st.sidebar.file_uploader("Cargar Excel semanal",type=["xlsx"])
+if not u: st.info("Cargue Base.xlsx en la barra lateral para comenzar."); st.stop()
+try: df,people=load_book(u.getvalue())
+except Exception as e: st.error(f"No se pudo procesar el archivo: {e}"); st.stop()
 
-st.markdown("<div class='hero'>Seguimiento de reportes técnicos</div>",unsafe_allow_html=True)
-st.markdown("<div class='sub'>Dashboard operativo · Norte, Centro y Sur · Antiguo desde 7 días</div>",unsafe_allow_html=True)
-
-zones=st.multiselect("Zona",["Norte","Centro","Sur","Sin asignar"],default=["Norte","Centro","Sur"])
-status_options=sorted(df["DR Status"].dropna().astype(str).unique())
-statuses=st.multiselect("Estado",status_options,default=status_options)
-f=df[df["Zona"].isin(zones)&df["DR Status"].isin(statuses)].copy()
-
-def download_button(frame,name="seguimiento_filtrado.csv"):
-    st.download_button("⬇ Exportar",frame.to_csv(index=False).encode("utf-8-sig"),name,"text/csv")
+st.markdown('<div class="hero">Seguimiento de informes técnicos</div>',unsafe_allow_html=True)
+st.markdown('<div class="sub">Dashboard operativo · Norte, Centro y Sur · Responsables integrados</div>',unsafe_allow_html=True)
+zsel=st.multiselect("Zona",["Norte","Centro","Sur","Sin asignar"],default=["Norte","Centro","Sur"])
+r_opts=sorted(df["Responsable zona"].unique()); rsel=st.multiselect("Responsable de zona",r_opts,default=r_opts)
+s_opts=sorted(df["DR Status"].dropna().astype(str).unique()); ssel=st.multiselect("Estado",s_opts,default=s_opts)
+f=df[df["Zona"].isin(zsel)&df["Responsable zona"].isin(rsel)&df["DR Status"].isin(ssel)].copy()
 
 if page=="Resumen":
+    st.subheader("Responsables por zona")
+    cols=st.columns(3)
+    for c,zona in zip(cols,["Norte","Centro","Sur"]):
+        row=people[people["Zona"].eq(zona)]; name=row["Responsable"].iloc[0] if len(row) else "Sin definir"
+        n=len(f[f["Zona"].eq(zona)]); old=len(f[(f["Zona"].eq(zona))&(f["Semáforo"].eq("🔴 Antiguo"))])
+        c.markdown(f'<div class="card"><div class="muted">{zona}</div><div class="person">👤 {name}</div><br><b>{n}</b> casos · <span style="color:#d9272e"><b>{old}</b> antiguos</span></div>',unsafe_allow_html=True)
     eligible=f[f["Gestión pendiente"].eq("Asignar responsable")]
-    vals={"total":len(eligible),"green":eligible["Semáforo"].str.contains("En plazo").sum(),"amber":eligible["Semáforo"].str.contains("Por vencer").sum(),"red":eligible["Semáforo"].str.contains("Antiguo").sum()}
-    cols=st.columns(4)
-    cards=[("Pendientes evaluados",vals["total"],"#244466"),("En plazo · 0–4 días",vals["green"],"#219653"),("Por vencer · 5–6 días",vals["amber"],"#f2a900"),("Antiguos · ≥7 días",vals["red"],"#d9272e")]
-    for c,(label,value,color) in zip(cols,cards):
-        c.markdown(f"<div class='card'><div class='klabel'>{label}</div><div class='kvalue' style='color:{color}'>{value}</div></div>",unsafe_allow_html=True)
-    st.markdown("<div class='note'>ℹ️ Alerta previa: días 5–6. Antiguo desde los 7 días. Waiting se activa cuando exista una fecha válida de respuesta de fábrica.</div>",unsafe_allow_html=True)
-    left,right=st.columns([1.15,1])
-    with left:
-        st.subheader("Semáforo por zona")
-        tab=pd.crosstab(eligible["Zona"],eligible["Semáforo"]).reindex(["Norte","Centro","Sur"],fill_value=0)
-        ren={c:c.replace("🟢 ","").replace("🟡 ","").replace("🔴 ","") for c in tab.columns}; tab=tab.rename(columns=ren)
-        tab=tab.reindex(columns=["En plazo","Por vencer","Antiguo"],fill_value=0); tab["Total"]=tab.sum(axis=1)
-        st.dataframe(tab,use_container_width=True)
-    with right:
-        st.subheader("Reglas de seguimiento")
-        st.markdown("<div class='card'><div class='rule'><b>1. Taller · Sin asignar</b><br>Contar desde la fecha del reporte mientras no tenga responsable. Antiguo a los 7 días.</div><div class='rule'><b>2. Waiting · Respuesta pendiente</b><br>Contar desde la respuesta de fábrica mientras siga pendiente responder al concesionario. Antiguo a los 7 días.</div><small>No usar cualquier actualización como respuesta. Closed queda excluido.</small></div>",unsafe_allow_html=True)
+    cards=st.columns(4); vals=[("Pendientes evaluados",len(eligible),"#244466"),("En plazo · 0–4 días",(eligible["Semáforo"]=="🟢 En plazo").sum(),"#219653"),("Por vencer · 5–6 días",(eligible["Semáforo"]=="🟡 Por vencer").sum(),"#f2a900"),("Antiguos · ≥7 días",(eligible["Semáforo"]=="🔴 Antiguo").sum(),"#d9272e")]
+    for c,(lab,val,color) in zip(cards,vals): c.markdown(f'<div class="card"><div class="muted">{lab}</div><div class="k" style="color:{color}">{val}</div></div>',unsafe_allow_html=True)
+    st.subheader("Semáforo por zona y responsable")
+    tab=pd.crosstab([eligible["Zona"],eligible["Responsable zona"]],eligible["Semáforo"]).reindex(columns=["🟢 En plazo","🟡 Por vencer","🔴 Antiguo"],fill_value=0); tab["Total"]=tab.sum(axis=1); st.dataframe(tab,use_container_width=True)
     st.subheader("Casos que requieren atención")
     att=f[f["Semáforo"].isin(["🔴 Antiguo","🟡 Por vencer","⚪ Pendiente validar"])].sort_values("Días",ascending=False)
-    cols_show=["ID","Zona","DR Status","Dealer_Location","Gestión pendiente","Días","Semáforo"]
-    st.dataframe(att[cols_show],use_container_width=True,hide_index=True)
-    download_button(att[cols_show])
-
+    show=["ID","Zona","Responsable zona","DR Status","Dealer_Location","Gestión pendiente","Días","Semáforo"]; st.dataframe(att[show],use_container_width=True,hide_index=True)
+    st.download_button("Exportar seguimiento",att[show].to_csv(index=False).encode("utf-8-sig"),"seguimiento.csv","text/csv")
 elif page=="Casos":
-    st.subheader("Detalle de casos")
-    search=st.text_input("Buscar ID, sucursal o responsable")
-    detail=f.copy()
-    if search:
-        mask=detail.astype(str).apply(lambda c:c.str.contains(search,case=False,na=False)).any(axis=1); detail=detail[mask]
-    cols=[c for c in ["ID","Zona","DR Status","Dealer_Location","Assigned to id","Created date","Días","Gestión pendiente","Semáforo"] if c in detail]
-    st.dataframe(detail[cols].sort_values("Created date",ascending=False),use_container_width=True,hide_index=True)
-    download_button(detail[cols],"casos_filtrados.csv")
-
+    q=st.text_input("Buscar ID, sucursal o responsable"); x=f.copy()
+    if q: x=x[x.astype(str).apply(lambda c:c.str.contains(q,case=False,na=False)).any(axis=1)]
+    show=["ID","Zona","Responsable zona","DR Status","Dealer_Location","Assigned to id","Created date","Días","Semáforo"]; st.dataframe(x[show],use_container_width=True,hide_index=True)
 elif page=="Zonas":
-    st.subheader("Estados por zona")
-    q=f.groupby(["Zona","DR Status"]).size().reset_index(name="Casos")
-    fig=px.bar(q,x="Zona",y="Casos",color="DR Status",barmode="stack",category_orders={"Zona":["Norte","Centro","Sur"]})
-    fig.update_layout(plot_bgcolor="white",paper_bgcolor="white",legend_title="Estado")
-    st.plotly_chart(fig,use_container_width=True)
-    matrix=pd.crosstab(f["Zona"],f["DR Status"]); matrix["Total"]=matrix.sum(axis=1)
-    st.dataframe(matrix,use_container_width=True)
-
-elif page=="Histórico semanal":
-    st.subheader("Histórico semanal")
-    st.info("Esta base es una fotografía actual. Para mostrar evolución, guarde un corte cada lunes. La aplicación no inventa semanas faltantes.")
-    st.markdown("**Estructura sugerida:** Base_2025-12-01.xlsx, Base_2025-12-08.xlsx, etc.")
-
+    q=f.groupby(["Zona","DR Status"]).size().reset_index(name="Casos"); fig=px.bar(q,x="Zona",y="Casos",color="DR Status",barmode="stack",category_orders={"Zona":["Norte","Centro","Sur"]}); st.plotly_chart(fig,use_container_width=True)
+elif page=="Responsables":
+    st.subheader("Carga y antigüedad por responsable")
+    summary=f.groupby(["Responsable zona","Zona"]).agg(Casos=("ID","count"),Antiguos=("Semáforo",lambda s:(s=="🔴 Antiguo").sum()),Por_vencer=("Semáforo",lambda s:(s=="🟡 Por vencer").sum()),Waiting=("DR Status",lambda s:(s=="Waiting").sum())).reset_index()
+    st.dataframe(summary,use_container_width=True,hide_index=True)
+    fig=px.bar(summary,x="Responsable zona",y=["Antiguos","Por_vencer"],barmode="group",labels={"value":"Casos","variable":"Indicador"}); st.plotly_chart(fig,use_container_width=True)
 else:
-    st.subheader("Configuración y calidad de datos")
-    unm=df[df["Zona"].eq("Sin asignar")]["Dealer_Location"].fillna("(vacío)").value_counts().rename_axis("Sucursal").reset_index(name="Casos")
-    st.write("Sucursales sin zona inequívoca")
-    st.dataframe(unm,use_container_width=True,hide_index=True)
-    st.warning(f"{(df['DR Status']=='Waiting').sum()} casos Waiting están pendientes de validar porque el archivo no contiene una fecha inequívoca de respuesta de fábrica.")
+    st.subheader("Calidad de datos")
+    st.dataframe(people,use_container_width=True,hide_index=True)
+    st.warning(f'{(df["DR Status"]=="Waiting").sum()} Waiting siguen pendientes de validar: falta fecha inequívoca de respuesta de fábrica.')
+    unm=df[df["Zona"].eq("Sin asignar")]["Dealer_Location"].value_counts().rename_axis("Sucursal").reset_index(name="Casos"); st.dataframe(unm,use_container_width=True,hide_index=True)
